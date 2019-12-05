@@ -1,4 +1,4 @@
-import { TextEditor, Disposable } from 'atom';
+import { TextEditor, File, Disposable } from 'atom';
 import * as path from 'path';
 import View from './view';
 import { validator, loadFile } from './validator';
@@ -20,6 +20,8 @@ interface AppState {
     editor?: TextEditor;
 }
 
+type LOADING_METHOD = 'editor' | 'project';
+
 export default class App {
     private player: Playable;
     private view: View | null = null;
@@ -32,6 +34,9 @@ export default class App {
 
     private config: Config;
 
+    private loadingMethod: LOADING_METHOD;
+    private projectFileName: string;
+
     public constructor(config: Config) {
         const rc = config.rc;
         this.view = new View((atom.workspace as any).getElement()); // eslint-disable-line
@@ -39,6 +44,9 @@ export default class App {
 
         this.config = config;
         this.config.on('change', this.onChange);
+
+        this.loadingMethod = 'project';
+        this.projectFileName = 'index.frag';
 
         this.state = {
             isPlaying: false,
@@ -151,20 +159,29 @@ export default class App {
             this.state.editorDisposer = undefined;
         }
 
-        const editor = atom.workspace.getActiveTextEditor();
-        this.state.editor = editor;
-        this.loadShaderOfEditor(editor);
-
-        if (editor !== undefined) {
-            this.state.editorDisposer = editor.onDidStopChanging((): void => {
-                this.loadShaderOfEditor(editor);
-            });
+        if (this.loadingMethod === 'editor') {
+            const editor = atom.workspace.getActiveTextEditor();
+            this.state.editor = editor;
+            this.loadShaderOfEditor(editor);
+            if (editor !== undefined) {
+                this.state.editorDisposer = editor.onDidStopChanging(
+                    (): void => {
+                        this.loadShaderOfEditor(editor);
+                    },
+                );
+            }
+        } else {
+            this.loadShaderOfProject(this.config.projectPath);
         }
     }
 
     public loadShader(): void {
-        const editor = atom.workspace.getActiveTextEditor();
-        this.loadShaderOfEditor(editor);
+        if (this.loadingMethod === 'editor') {
+            const editor = atom.workspace.getActiveTextEditor();
+            this.loadShaderOfEditor(editor);
+        } else {
+            this.loadShaderOfProject(this.config.projectPath);
+        }
     }
 
     public loadSoundShader(): Promise<void> {
@@ -358,6 +375,104 @@ export default class App {
         }
     }
 
+    private async loadShaderOfProject(
+        projectPath?: string,
+        isSound?: boolean,
+    ): Promise<void> {
+        if (projectPath === undefined) {
+            // This case occurs when no files are open/active
+            return Promise.resolve();
+        }
+        const filepath = projectPath + '/' + this.projectFileName;
+
+        const dirname = path.dirname(filepath);
+
+        const m = (filepath || '').match(/(\.(?:glsl|frag|vert|fs|vs))$/);
+        if (!m) {
+            console.error("The filename for current doesn't seems to be GLSL.");
+            return Promise.resolve();
+        }
+        const postfix = m[1];
+
+        // let shader = editor.getText();
+        const file = new File(filepath);
+        file.read()
+            .then(async value => {
+                try {
+                    let shader = value;
+                    console.log(shader);
+                    if (!shader) {
+                        console.error(filepath + ' is not found.');
+                        return Promise.resolve();
+                    }
+
+                    // Detect changes of settings
+                    let headComment = (shader.match(
+                        /(?:\/\*)((?:.|\n|\r|\n\r)*?)(?:\*\/)/,
+                    ) || [])[1];
+                    headComment = headComment || '{}'; // suppress JSON5 parse errors
+
+                    let diff;
+                    if (isSound) {
+                        diff = this.config.setSoundSettingsByString(
+                            filepath,
+                            headComment,
+                        );
+                    } else {
+                        diff = this.config.setFileSettingsByString(
+                            filepath,
+                            headComment,
+                        );
+                    }
+                    const rc = diff.newConfig;
+                    this.onAnyChanges(diff);
+                    this.player.onChange(diff);
+
+                    // Compile the shader with glslify-lite
+                    if (rc.glslify) {
+                        shader = await glslify.compile(shader, {
+                            basedir: path.dirname(filepath),
+                        });
+                    }
+
+                    // Validate compiled shader
+                    if (!isSound) {
+                        await validator(
+                            this.glslangValidatorPath,
+                            shader,
+                            postfix,
+                        );
+                    }
+
+                    const passes = await this.createPasses(
+                        rc.PASSES,
+                        shader,
+                        postfix,
+                        dirname,
+                    );
+
+                    if (isSound) {
+                        this.lastSoundShader = shader;
+                        return this.player.command({
+                            type: 'LOAD_SOUND_SHADER',
+                            shader,
+                        });
+                    } else {
+                        this.lastShader = passes;
+                        return this.player.command({
+                            type: 'LOAD_SHADER',
+                            shader: passes,
+                        });
+                    }
+                } catch (e) {
+                    console.error(e);
+                }
+            })
+            .catch(e => {
+                console.error(e);
+            });
+    }
+
     public toggleFullscreen(): void {
         this.player.command({ type: 'TOGGLE_FULLSCREEN' });
     }
@@ -383,5 +498,13 @@ export default class App {
 
     public setRecordingMode(mode: RecordingMode): void {
         this.recorder.setRecordingMode(mode);
+    }
+
+    public setLoadingMethod(method: LOADING_METHOD): void {
+        this.loadingMethod = method;
+        console.log('loadingMethod is ' + this.loadingMethod);
+    }
+    public setProjectFileName(fileName: string): void {
+        this.projectFileName = fileName;
     }
 }

@@ -55,6 +55,9 @@ export default class Wrapper {
         atom.config.observe('veda.recordingMode', (x): void =>
             this.app.setRecordingMode(x),
         );
+        atom.config.observe('veda.loadingMethod', (x): void =>
+            this.app.setLoadingMethod(x),
+        );
 
         // Events subscribed to in atom's system can be easily cleaned up with a CompositeDisposable
         this.subscriptions = new CompositeDisposable();
