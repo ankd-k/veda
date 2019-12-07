@@ -24,3 +24,11 @@ export function convertPathForServer(
 
     return `http://localhost:${port}/link/${relativePath}`;
 }
+
+export async function saveAllTextEditor(): Promise<void[]> {
+    const array = atom.workspace
+        .getTextEditors()
+        .filter(item => item.isModified())
+        .map(item => item.save());
+    return Promise.all(array);
+}

@@ -98,7 +98,7 @@ module.exports = {
             description:
                 'when you choose "project" about Loading Mode, the shader of this file name will be called',
             type: 'string',
-            default: 'index.frag',
+            default: 'index.glsl',
             order: 10,
         },
     },

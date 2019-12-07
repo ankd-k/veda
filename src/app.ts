@@ -12,6 +12,7 @@ import OscLoader from './osc-loader';
 import Recorder, { RecordingMode } from './recorder';
 import * as glslify from 'glslify-lite';
 import * as prebuilt from 'glslang-validator-prebuilt';
+import { saveAllTextEditor } from './utils';
 
 interface AppState {
     isPlaying: boolean;
@@ -383,10 +384,10 @@ export default class App {
             // This case occurs when no files are open/active
             return Promise.resolve();
         }
+
+        // get filePath
         const filepath = projectPath + '/' + this.projectFileName;
-
         const dirname = path.dirname(filepath);
-
         const m = (filepath || '').match(/(\.(?:glsl|frag|vert|fs|vs))$/);
         if (!m) {
             console.error("The filename for current doesn't seems to be GLSL.");
@@ -394,82 +395,91 @@ export default class App {
         }
         const postfix = m[1];
 
-        // let shader = editor.getText();
-        const file = new File(filepath);
-        file.read()
-            .then(async value => {
-                try {
-                    let shader = value;
-                    console.log(shader);
-                    if (!shader) {
-                        console.error(filepath + ' is not found.');
+        // save all textEditor file
+        saveAllTextEditor()
+            .then(() => {
+                // load shader
+                const file = new File(filepath);
+                file.read()
+                    .then(async value => {
+                        try {
+                            let shader = value;
+                            console.log('file.read() success. ¥n' + shader);
+                            if (!shader) {
+                                console.error(filepath + ' is not found.');
+                                return Promise.resolve();
+                            }
+
+                            // Detect changes of settings
+                            let headComment = (shader.match(
+                                /(?:\/\*)((?:.|\n|\r|\n\r)*?)(?:\*\/)/,
+                            ) || [])[1];
+                            headComment = headComment || '{}'; // suppress JSON5 parse errors
+
+                            let diff;
+                            if (isSound) {
+                                diff = this.config.setSoundSettingsByString(
+                                    filepath,
+                                    headComment,
+                                );
+                            } else {
+                                diff = this.config.setFileSettingsByString(
+                                    filepath,
+                                    headComment,
+                                );
+                            }
+                            const rc = diff.newConfig;
+                            this.onAnyChanges(diff);
+                            this.player.onChange(diff);
+
+                            // Compile the shader with glslify-lite
+                            if (rc.glslify) {
+                                shader = await glslify.compile(shader, {
+                                    basedir: path.dirname(filepath),
+                                });
+                            }
+
+                            // Validate compiled shader
+                            if (!isSound) {
+                                await validator(
+                                    this.glslangValidatorPath,
+                                    shader,
+                                    postfix,
+                                );
+                            }
+
+                            const passes = await this.createPasses(
+                                rc.PASSES,
+                                shader,
+                                postfix,
+                                dirname,
+                            );
+
+                            if (isSound) {
+                                this.lastSoundShader = shader;
+                                return this.player.command({
+                                    type: 'LOAD_SOUND_SHADER',
+                                    shader,
+                                });
+                            } else {
+                                this.lastShader = passes;
+                                return this.player.command({
+                                    type: 'LOAD_SHADER',
+                                    shader: passes,
+                                });
+                            }
+                        } catch (e) {
+                            console.error(e);
+                        }
+                    })
+                    .catch(e => {
+                        console.error('file read error. ', e);
                         return Promise.resolve();
-                    }
-
-                    // Detect changes of settings
-                    let headComment = (shader.match(
-                        /(?:\/\*)((?:.|\n|\r|\n\r)*?)(?:\*\/)/,
-                    ) || [])[1];
-                    headComment = headComment || '{}'; // suppress JSON5 parse errors
-
-                    let diff;
-                    if (isSound) {
-                        diff = this.config.setSoundSettingsByString(
-                            filepath,
-                            headComment,
-                        );
-                    } else {
-                        diff = this.config.setFileSettingsByString(
-                            filepath,
-                            headComment,
-                        );
-                    }
-                    const rc = diff.newConfig;
-                    this.onAnyChanges(diff);
-                    this.player.onChange(diff);
-
-                    // Compile the shader with glslify-lite
-                    if (rc.glslify) {
-                        shader = await glslify.compile(shader, {
-                            basedir: path.dirname(filepath),
-                        });
-                    }
-
-                    // Validate compiled shader
-                    if (!isSound) {
-                        await validator(
-                            this.glslangValidatorPath,
-                            shader,
-                            postfix,
-                        );
-                    }
-
-                    const passes = await this.createPasses(
-                        rc.PASSES,
-                        shader,
-                        postfix,
-                        dirname,
-                    );
-
-                    if (isSound) {
-                        this.lastSoundShader = shader;
-                        return this.player.command({
-                            type: 'LOAD_SOUND_SHADER',
-                            shader,
-                        });
-                    } else {
-                        this.lastShader = passes;
-                        return this.player.command({
-                            type: 'LOAD_SHADER',
-                            shader: passes,
-                        });
-                    }
-                } catch (e) {
-                    console.error(e);
-                }
+                    });
             })
             .catch(e => {
-                console.error(e);
+                console.error('save textEditor error. ', e);
+                return Promise.resolve();
             });
     }
 
